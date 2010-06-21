@@ -1,0 +1,1231 @@
+   1               		.file	"foodloader.c"
+   2               	__SREG__ = 0x3f
+   3               	__SP_H__ = 0x3e
+   4               	__SP_L__ = 0x3d
+   5               	__CCP__  = 0x34
+   6               	__tmp_reg__ = 0
+   7               	__zero_reg__ = 1
+   8               		.global __do_copy_data
+   9               		.global __do_clear_bss
+  12               		.text
+  13               	.Ltext0:
+  96               	uart_putc:
+  97               		.stabd	46,0,0
+   0:foodloader.c  **** /* vim:fdm=marker ts=4 et ai
+   1:foodloader.c  ****  * {{{
+   2:foodloader.c  ****  *
+   3:foodloader.c  ****  * (c) by Alexander Neumann <alexander@bumpern.de>
+   4:foodloader.c  ****  *     Lars Noschinski <lars@public.noschinski.de>
+   5:foodloader.c  ****  *
+   6:foodloader.c  ****  *     Idea and implementation for char startup mode by
+   7:foodloader.c  ****  *     Scott Torborg - storborg@mit.edu - August 2006
+   8:foodloader.c  ****  *
+   9:foodloader.c  ****  * This program is free software; you can redistribute it and/or modify
+  10:foodloader.c  ****  * it under the terms of the GNU General Public License version 2 as
+  11:foodloader.c  ****  * published by the Free Software Foundation.
+  12:foodloader.c  ****  *
+  13:foodloader.c  ****  * This program is distributed in the hope that it will be useful,
+  14:foodloader.c  ****  * but WITHOUT ANY WARRANTY; without even the implied warranty of
+  15:foodloader.c  ****  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  16:foodloader.c  ****  * GNU General Public License for more details.
+  17:foodloader.c  ****  *
+  18:foodloader.c  ****  * You should have received a copy of the GNU General Public License
+  19:foodloader.c  ****  * along with this program; if not, write to the Free Software
+  20:foodloader.c  ****  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+  21:foodloader.c  ****  *
+  22:foodloader.c  ****  * For more information on the GPL, please go to:
+  23:foodloader.c  ****  * http://www.gnu.org/copyleft/gpl.html
+  24:foodloader.c  ****  }}} */
+  25:foodloader.c  **** 
+  26:foodloader.c  **** #include <avr/io.h>
+  27:foodloader.c  **** #include <avr/boot.h>
+  28:foodloader.c  **** #include <avr/interrupt.h>
+  29:foodloader.c  **** #include <avr/eeprom.h>
+  30:foodloader.c  **** #include <avr/pgmspace.h>
+  31:foodloader.c  **** #include <util/delay.h>
+  32:foodloader.c  **** #include "config.h"
+  33:foodloader.c  **** #include "uart.h"
+  34:foodloader.c  **** 
+  35:foodloader.c  **** #ifdef HONOR_WATCHDOG_RESET
+  36:foodloader.c  **** #   include <avr/wdt.h>
+  37:foodloader.c  **** #endif
+  38:foodloader.c  **** 
+  39:foodloader.c  **** #if defined(__AVR_ATmega128__)
+  40:foodloader.c  ****     #define FLASH_G_64K
+  41:foodloader.c  **** #endif
+  42:foodloader.c  **** 
+  43:foodloader.c  **** #if defined(FLASH_G_64K)
+  44:foodloader.c  ****     uint32_t flash_address;             /* start flash (byte address, converted) write at this addr
+  45:foodloader.c  **** #else
+  46:foodloader.c  ****     uint16_t flash_address;             /* start flash (byte address, converted) write at this addr
+  47:foodloader.c  **** #endif
+  48:foodloader.c  **** 
+  49:foodloader.c  **** uint16_t eeprom_address;            /* start eerprom (byte address) write at this address */
+  50:foodloader.c  **** 
+  51:foodloader.c  **** 
+  52:foodloader.c  **** /* prototypes */
+  53:foodloader.c  **** void (*jump_to_application)(void) = (void *)0x0000;
+  54:foodloader.c  **** 
+  55:foodloader.c  **** /* defines */
+  56:foodloader.c  **** #define HIGH(x) ( (uint8_t) (x >> 8) )
+  57:foodloader.c  **** #define LOW(x)  ( (uint8_t) x )
+  58:foodloader.c  **** 
+  59:foodloader.c  **** #define noinline __attribute__((noinline))
+  60:foodloader.c  **** 
+  61:foodloader.c  **** 
+  62:foodloader.c  **** /** output one character */
+  63:foodloader.c  **** static noinline void uart_putc(uint8_t data)
+  64:foodloader.c  **** /*{{{*/ {
+  99               	.LM0:
+ 100               	.LFBB1:
+ 101               	/* prologue: function */
+ 102               	/* frame size = 0 */
+ 103               	.L2:
+  65:foodloader.c  **** 
+  66:foodloader.c  ****     /* loop until data has been transmitted */
+  67:foodloader.c  ****     while (!(_UCSRA_UART0 & _BV(_UDRE_UART0)));
+ 105               	.LM1:
+ 106 0000 5D9B      		sbis 43-32,5
+ 107 0002 00C0      		rjmp .L2
+  68:foodloader.c  **** 
+  69:foodloader.c  ****     /* put data in buffer */
+  70:foodloader.c  ****     _UDR_UART0 = data;
+ 109               	.LM2:
+ 110 0004 8CB9      		out 44-32,r24
+ 111               	/* epilogue start */
+  71:foodloader.c  **** 
+  72:foodloader.c  **** } /* }}} */
+ 113               	.LM3:
+ 114 0006 0895      		ret
+ 116               	.Lscope1:
+ 118               		.stabd	78,0,0
+ 121               	uart_getc:
+ 122               		.stabd	46,0,0
+  73:foodloader.c  **** 
+  74:foodloader.c  **** /** output a string */
+  75:foodloader.c  **** static inline void uart_puts(uint8_t buffer[])
+  76:foodloader.c  **** /*{{{*/ {
+  77:foodloader.c  **** 
+  78:foodloader.c  ****     /* send everything until end of string */
+  79:foodloader.c  ****     while (*buffer != 0) {
+  80:foodloader.c  ****         uart_putc(*buffer);
+  81:foodloader.c  ****         buffer++;
+  82:foodloader.c  ****     }
+  83:foodloader.c  **** 
+  84:foodloader.c  **** } /* }}} */
+  85:foodloader.c  **** 
+  86:foodloader.c  **** /** block until one character has been read */
+  87:foodloader.c  **** static noinline uint8_t uart_getc(void)
+  88:foodloader.c  **** /*{{{*/ {
+ 124               	.LM4:
+ 125               	.LFBB2:
+ 126               	/* prologue: function */
+ 127               	/* frame size = 0 */
+ 128               	.L6:
+  89:foodloader.c  **** 
+  90:foodloader.c  ****     /* wait if a byte has been received */
+  91:foodloader.c  ****     while (!(_UCSRA_UART0 & _BV(_RXC_UART0)));
+ 130               	.LM5:
+ 131 0008 5F9B      		sbis 43-32,7
+ 132 000a 00C0      		rjmp .L6
+  92:foodloader.c  **** 
+  93:foodloader.c  ****     /* return received byte */
+  94:foodloader.c  ****     return _UDR_UART0;
+ 134               	.LM6:
+ 135 000c 8CB1      		in r24,44-32
+ 136               	/* epilogue start */
+  95:foodloader.c  **** 
+  96:foodloader.c  **** } /* }}} */
+ 138               	.LM7:
+ 139 000e 0895      		ret
+ 141               	.Lscope2:
+ 143               		.stabd	78,0,0
+ 146               	start_application:
+ 147               		.stabd	46,0,0
+  97:foodloader.c  **** 
+  98:foodloader.c  **** /* loop a few times, and see if the character is received */
+  99:foodloader.c  **** static inline uint8_t wait_for_char(void)
+ 100:foodloader.c  **** /*{{{*/ {
+ 101:foodloader.c  ****     uint8_t i;
+ 102:foodloader.c  **** 
+ 103:foodloader.c  ****     for(i = 0; i < 10; i++) {
+ 104:foodloader.c  ****         _delay_loop_2(50000);
+ 105:foodloader.c  **** 
+ 106:foodloader.c  ****         if(_UCSRA_UART0 & _BV(_RXC_UART0)) {
+ 107:foodloader.c  ****             if(_UDR_UART0 == BOOTLOADER_ENTRY_CHAR) {
+ 108:foodloader.c  ****                     return 1;
+ 109:foodloader.c  ****             }
+ 110:foodloader.c  ****         }
+ 111:foodloader.c  ****     }
+ 112:foodloader.c  **** 
+ 113:foodloader.c  ****     /* never received the character */
+ 114:foodloader.c  ****     return 0;
+ 115:foodloader.c  **** } /* }}} */
+ 116:foodloader.c  **** 
+ 117:foodloader.c  **** /** init the hardware uart */
+ 118:foodloader.c  **** static inline void init_uart(void)
+ 119:foodloader.c  **** /*{{{*/ {
+ 120:foodloader.c  **** 
+ 121:foodloader.c  ****     /* set baud rate */
+ 122:foodloader.c  ****     _UBRRH_UART0 = (uint8_t)(UART_UBRR >> 8);  /* high byte */
+ 123:foodloader.c  ****     _UBRRL_UART0 = (uint8_t)UART_UBRR;         /* low byte */
+ 124:foodloader.c  **** 
+ 125:foodloader.c  ****     /* set mode */
+ 126:foodloader.c  ****     _UCSRC_UART0 = UART_UCSRC;
+ 127:foodloader.c  **** 
+ 128:foodloader.c  ****     /* enable transmitter, receiver */
+ 129:foodloader.c  ****     _UCSRB_UART0 = _BV(_TXEN_UART0) | _BV(_RXEN_UART0);
+ 130:foodloader.c  **** 
+ 131:foodloader.c  **** } /* }}} */
+ 132:foodloader.c  **** 
+ 133:foodloader.c  **** /** move interrupt vectors to application section and jump to main program */
+ 134:foodloader.c  **** static noinline void start_application(void)
+ 135:foodloader.c  **** /* {{{ */ {
+ 149               	.LM8:
+ 150               	.LFBB3:
+ 151               	/* prologue: function */
+ 152               	/* frame size = 0 */
+ 136:foodloader.c  **** 
+ 137:foodloader.c  **** #   	ifdef BOOTLOADER_JUMPER
+ 138:foodloader.c  ****         /* reset input pin */
+ 139:foodloader.c  ****         BOOTLOADER_PORT &= BOOTLOADER_MASK;
+ 140:foodloader.c  **** #   	endif
+ 141:foodloader.c  **** 
+ 142:foodloader.c  ****         /* move interrupt vectors to application section and jump to main program */
+ 143:foodloader.c  **** //        _IVREG = _BV(IVCE);
+ 144:foodloader.c  **** //        _IVREG = 0;
+ 145:foodloader.c  ****         jump_to_application();
+ 154               	.LM9:
+ 155 0010 E091 0000 		lds r30,jump_to_application
+ 156 0014 F091 0000 		lds r31,(jump_to_application)+1
+ 157 0018 0995      		icall
+ 158               	/* epilogue start */
+ 146:foodloader.c  **** 
+ 147:foodloader.c  **** } /* }}} */
+ 160               	.LM10:
+ 161 001a 0895      		ret
+ 163               	.Lscope3:
+ 165               		.stabd	78,0,0
+ 166               		.data
+ 167               	.LC0:
+ 168 0000 4644 4C20 		.string	"FDL v"
+ 168      7600 
+ 169               		.text
+ 171               	.global	main
+ 173               	main:
+ 174               		.stabd	46,0,0
+ 148:foodloader.c  **** 
+ 149:foodloader.c  **** int main(void)
+ 150:foodloader.c  **** /* {{{ */ {
+ 176               	.LM11:
+ 177               	.LFBB4:
+ 178 001c 4F92      		push r4
+ 179 001e 5F92      		push r5
+ 180 0020 6F92      		push r6
+ 181 0022 7F92      		push r7
+ 182 0024 8F92      		push r8
+ 183 0026 9F92      		push r9
+ 184 0028 AF92      		push r10
+ 185 002a BF92      		push r11
+ 186 002c CF92      		push r12
+ 187 002e DF92      		push r13
+ 188 0030 EF92      		push r14
+ 189 0032 FF92      		push r15
+ 190 0034 0F93      		push r16
+ 191 0036 1F93      		push r17
+ 192 0038 CF93      		push r28
+ 193 003a DF93      		push r29
+ 194               	/* prologue: function */
+ 195               	/* frame size = 0 */
+ 196               	.LBB36:
+ 197               	.LBB37:
+ 123:foodloader.c  ****     _UBRRH_UART0 = (uint8_t)(UART_UBRR >> 8);  /* high byte */
+ 199               	.LM12:
+ 200 003c 10BC      		out 64-32,__zero_reg__
+ 124:foodloader.c  ****     _UBRRL_UART0 = (uint8_t)UART_UBRR;         /* low byte */
+ 202               	.LM13:
+ 203 003e 88E0      		ldi r24,lo8(8)
+ 204 0040 89B9      		out 41-32,r24
+ 127:foodloader.c  ****     _UCSRC_UART0 = UART_UCSRC;
+ 206               	.LM14:
+ 207 0042 86E8      		ldi r24,lo8(-122)
+ 208 0044 80BD      		out 64-32,r24
+ 130:foodloader.c  ****     _UCSRB_UART0 = _BV(_TXEN_UART0) | _BV(_RXEN_UART0);
+ 210               	.LM15:
+ 211 0046 88E1      		ldi r24,lo8(24)
+ 212 0048 8AB9      		out 42-32,r24
+ 213               	.LBE37:
+ 214               	.LBE36:
+ 151:foodloader.c  **** 
+ 152:foodloader.c  **** #   ifdef HONOR_WATCHDOG_RESET
+ 153:foodloader.c  ****     /* if this reset was caused by the watchdog timer, just start the
+ 154:foodloader.c  ****      * application, else disable the watchdog */
+ 155:foodloader.c  ****     if (MCUSR & _BV(WDRF)){
+ 156:foodloader.c  ****         jump_to_application();
+ 157:foodloader.c  ****     }else{
+ 158:foodloader.c  **** 	    wdt_disable();
+ 159:foodloader.c  **** 	}
+ 160:foodloader.c  **** #   endif
+ 161:foodloader.c  **** 
+ 162:foodloader.c  **** 
+ 163:foodloader.c  ****     uint8_t memory_type;
+ 164:foodloader.c  **** 
+ 165:foodloader.c  ****     /* BUF_T is defined in config.h, according the pagesize */
+ 166:foodloader.c  ****     BUF_T buffer_size;
+ 167:foodloader.c  **** 
+ 168:foodloader.c  ****     init_uart();
+ 169:foodloader.c  **** 
+ 170:foodloader.c  ****     /* send boot message */
+ 171:foodloader.c  **** #   if SEND_BOOT_MESSAGE
+ 172:foodloader.c  ****         uart_putc('b');
+ 216               	.LM16:
+ 217 004a 82E6      		ldi r24,lo8(98)
+ 218 004c 00D0      		rcall uart_putc
+ 219 004e 20E0      		ldi r18,lo8(0)
+ 220               	.LBB38:
+ 221               	.LBB39:
+ 222               	.LBB40:
+ 223               	.LBB41:
+ 225               	.Ltext1:
+   0:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** /* Copyright (c) 2002, Marek Michalkiewicz
+   1:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****    Copyright (c) 2007 Joerg Wunsch
+   2:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****    All rights reserved.
+   3:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+   4:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****    Redistribution and use in source and binary forms, with or without
+   5:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****    modification, are permitted provided that the following conditions are met:
+   6:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+   7:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****    * Redistributions of source code must retain the above copyright
+   8:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****      notice, this list of conditions and the following disclaimer.
+   9:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  10:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****    * Redistributions in binary form must reproduce the above copyright
+  11:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****      notice, this list of conditions and the following disclaimer in
+  12:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****      the documentation and/or other materials provided with the
+  13:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****      distribution.
+  14:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  15:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****    * Neither the name of the copyright holders nor the names of
+  16:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****      contributors may be used to endorse or promote products derived
+  17:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****      from this software without specific prior written permission.
+  18:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  19:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  20:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****   AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  21:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****   IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+  22:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****   ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+  23:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****   LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+  24:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****   CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+  25:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****   SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  26:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****   INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+  27:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****   CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+  28:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****   ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  29:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****   POSSIBILITY OF SUCH DAMAGE. */
+  30:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  31:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** /* $Id: delay_basic.h,v 1.1 2007/05/13 21:23:20 joerg_wunsch Exp $ */
+  32:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  33:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** #ifndef _UTIL_DELAY_BASIC_H_
+  34:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** #define _UTIL_DELAY_BASIC_H_ 1
+  35:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  36:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** #include <inttypes.h>
+  37:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  38:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** /** \file */
+  39:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** /** \defgroup util_delay_basic <util/delay_basic.h>: Basic busy-wait delay loops
+  40:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     \code
+  41:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     #include <util/delay_basic.h>
+  42:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     \endcode
+  43:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  44:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     The functions in this header file implement simple delay loops
+  45:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     that perform a busy-waiting.  They are typically used to
+  46:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     facilitate short delays in the program execution.  They are
+  47:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     implemented as count-down loops with a well-known CPU cycle
+  48:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     count per loop iteration.  As such, no other processing can
+  49:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     occur simultaneously.  It should be kept in mind that the
+  50:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     functions described here do not disable interrupts.
+  51:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  52:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     In general, for long delays, the use of hardware timers is
+  53:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     much preferrable, as they free the CPU, and allow for
+  54:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     concurrent processing of other events while the timer is
+  55:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     running.  However, in particular for very short delays, the
+  56:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     overhead of setting up a hardware timer is too much compared
+  57:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     to the overall delay time.
+  58:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  59:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     Two inline functions are provided for the actual delay algorithms.
+  60:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  61:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** */
+  62:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  63:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** #if !defined(__DOXYGEN__)
+  64:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** static inline void _delay_loop_1(uint8_t __count) __attribute__((always_inline));
+  65:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** static inline void _delay_loop_2(uint16_t __count) __attribute__((always_inline));
+  66:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** #endif
+  67:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  68:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** /** \ingroup util_delay_basic
+  69:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  70:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     Delay loop using an 8-bit counter \c __count, so up to 256
+  71:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     iterations are possible.  (The value 256 would have to be passed
+  72:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     as 0.)  The loop executes three CPU cycles per iteration, not
+  73:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     including the overhead the compiler needs to setup the counter
+  74:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     register.
+  75:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  76:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     Thus, at a CPU speed of 1 MHz, delays of up to 768 microseconds
+  77:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     can be achieved.
+  78:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** */
+  79:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** void
+  80:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** _delay_loop_1(uint8_t __count)
+  81:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** {
+  82:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 	__asm__ volatile (
+  83:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 		"1: dec %0" "\n\t"
+  84:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 		"brne 1b"
+  85:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 		: "=r" (__count)
+  86:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 		: "0" (__count)
+  87:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 	);
+  88:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** }
+  89:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  90:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** /** \ingroup util_delay_basic
+  91:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  92:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     Delay loop using a 16-bit counter \c __count, so up to 65536
+  93:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     iterations are possible.  (The value 65536 would have to be
+  94:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     passed as 0.)  The loop executes four CPU cycles per iteration,
+  95:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     not including the overhead the compiler requires to setup the
+  96:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     counter register pair.
+  97:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 
+  98:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     Thus, at a CPU speed of 1 MHz, delays of up to about 262.1
+  99:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****     milliseconds can be achieved.
+ 100:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h ****  */
+ 101:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** void
+ 102:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** _delay_loop_2(uint16_t __count)
+ 103:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** {
+ 104:/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h **** 	__asm__ volatile (
+ 227               	.LM17:
+ 228 0050 40E5      		ldi r20,lo8(-15536)
+ 229 0052 53EC      		ldi r21,hi8(-15536)
+ 230               	.L14:
+ 231 0054 CA01      		movw r24,r20
+ 232               	/* #APP */
+ 233               	 ;  105 "/usr/lib/gcc/avr/4.3.4/../../../avr/include/util/delay_basic.h" 1
+ 234 0056 0197      		1: sbiw r24,1
+ 235 0058 01F4      		brne 1b
+ 236               	 ;  0 "" 2
+ 237               	/* #NOAPP */
+ 238               	.LBE41:
+ 239               	.LBE40:
+ 241               	.Ltext2:
+ 107:foodloader.c  ****         if(_UCSRA_UART0 & _BV(_RXC_UART0)) {
+ 243               	.LM18:
+ 244 005a 5F9B      		sbis 43-32,7
+ 245 005c 00C0      		rjmp .L12
+ 108:foodloader.c  ****             if(_UDR_UART0 == BOOTLOADER_ENTRY_CHAR) {
+ 247               	.LM19:
+ 248 005e 8CB1      		in r24,44-32
+ 249 0060 8037      		cpi r24,lo8(112)
+ 250 0062 01F0      		breq .L13
+ 251               	.L12:
+ 104:foodloader.c  ****     for(i = 0; i < 10; i++) {
+ 253               	.LM20:
+ 254 0064 2F5F      		subi r18,lo8(-(1))
+ 255 0066 2A30      		cpi r18,lo8(10)
+ 256 0068 01F4      		brne .L14
+ 257 006a 00C0      		rjmp .L75
+ 258               	.L13:
+ 259               	.LBE39:
+ 260               	.LBE38:
+ 173:foodloader.c  **** #   endif
+ 174:foodloader.c  **** 
+ 175:foodloader.c  **** #   ifdef BOOTLOADER_JUMPER
+ 176:foodloader.c  ****     /* configure pin as input and enable pullup */
+ 177:foodloader.c  ****     BOOTLOADER_DDR &= ~BOOTLOADER_MASK;
+ 178:foodloader.c  ****     BOOTLOADER_PORT |= BOOTLOADER_MASK;
+ 179:foodloader.c  **** #   endif
+ 180:foodloader.c  **** 
+ 181:foodloader.c  ****     /* bootloader activation methods */
+ 182:foodloader.c  ****     if (!(
+ 183:foodloader.c  **** #   ifdef BOOTLOADER_JUMPER
+ 184:foodloader.c  ****             /* 1) activation via jumper */
+ 185:foodloader.c  ****             ((BOOTLOADER_PIN & BOOTLOADER_MASK) == 0) ||
+ 186:foodloader.c  **** #   endif
+ 187:foodloader.c  **** #   ifdef BOOTLOADER_CHAR
+ 188:foodloader.c  ****             /* 2) or activation via char */
+ 189:foodloader.c  ****             wait_for_char() ||
+ 190:foodloader.c  **** #   endif
+ 191:foodloader.c  ****             0)) {
+ 192:foodloader.c  **** 				
+ 193:foodloader.c  **** #       if SEND_BOOT_MESSAGE
+ 194:foodloader.c  ****         uart_putc('a');
+ 195:foodloader.c  **** #       endif
+ 196:foodloader.c  **** 
+ 197:foodloader.c  ****         start_application();
+ 198:foodloader.c  ****     }
+ 199:foodloader.c  **** 
+ 200:foodloader.c  **** 	
+ 201:foodloader.c  **** //start_bootloader:
+ 202:foodloader.c  **** 	
+ 203:foodloader.c  **** #   if SEND_BOOT_MESSAGE
+ 204:foodloader.c  ****     uart_putc('p');
+ 262               	.LM21:
+ 263 006c 80E7      		ldi r24,lo8(112)
+ 264 006e 00D0      		rcall uart_putc
+ 265               	.LBB42:
+ 205:foodloader.c  **** #   endif
+ 206:foodloader.c  **** 
+ 207:foodloader.c  ****     /* main loop */
+ 208:foodloader.c  ****     while (1)
+ 209:foodloader.c  ****     {
+ 210:foodloader.c  ****         uint8_t command;
+ 211:foodloader.c  **** 
+ 212:foodloader.c  ****         /* block until a command has been received */
+ 213:foodloader.c  ****         command = uart_getc();
+ 214:foodloader.c  **** 
+ 215:foodloader.c  ****         switch (command)
+ 216:foodloader.c  ****         {
+ 217:foodloader.c  ****             case 'P':   /* enter programming mode, respond with CR */
+ 218:foodloader.c  ****             case 'L':   /* leave programming mode, respond with CR */
+ 219:foodloader.c  **** #if EXIT_BOOTLOADER == 0
+ 220:foodloader.c  ****             case 'E':   /* exit bootloader, ignored */
+ 221:foodloader.c  **** #endif
+ 222:foodloader.c  ****                         uart_putc('\r');
+ 223:foodloader.c  ****                         break;
+ 224:foodloader.c  **** 
+ 225:foodloader.c  ****             case 'a':   /* report if we support address autoincrementing: yes, of course */
+ 226:foodloader.c  ****                         uart_putc('Y');
+ 227:foodloader.c  ****                         break;
+ 228:foodloader.c  **** 
+ 229:foodloader.c  ****             case 'A':   /* set write address start (in words), read high and low byte and respond w
+ 230:foodloader.c  ****                         /* {{{ */
+ 231:foodloader.c  **** 
+ 232:foodloader.c  ****                         /* eeprom address is a byte address */
+ 233:foodloader.c  ****                         eeprom_address = (uart_getc() << 8) | uart_getc();
+ 234:foodloader.c  **** 
+ 235:foodloader.c  ****                         /* flash address is a byte address too, but we get a
+ 236:foodloader.c  ****                          * word address so convert it */
+ 237:foodloader.c  ****                         flash_address = eeprom_address;
+ 238:foodloader.c  ****                         flash_address <<= 1;
+ 239:foodloader.c  **** 
+ 240:foodloader.c  ****                         /* acknowledge */
+ 241:foodloader.c  ****                         uart_putc('\r');
+ 242:foodloader.c  ****                         break;
+ 243:foodloader.c  **** 
+ 244:foodloader.c  ****                         /* }}} */
+ 245:foodloader.c  **** 
+ 246:foodloader.c  ****             case 'e':   /* do a chip-erase, respond with CR afterwards */
+ 247:foodloader.c  ****                         /* {{{ */
+ 248:foodloader.c  **** 
+ 249:foodloader.c  ****                         /* iterate over all pages in flash, and try to erase every single
+ 250:foodloader.c  ****                          * one of them (the bootloader section should be protected by lock-bits (!)
+ 251:foodloader.c  **** 
+ 252:foodloader.c  ****                         for (flash_address = 0; flash_address < BOOT_SECTION_START; flash_address +
+ 253:foodloader.c  ****                             boot_page_erase_safe(flash_address);
+ 267               	.LM22:
+ 268 0070 63E0      		ldi r22,lo8(3)
+ 269 0072 762E      		mov r7,r22
+ 270               	.LBB43:
+ 254:foodloader.c  ****                         }
+ 255:foodloader.c  **** 
+ 256:foodloader.c  ****                         uart_putc('\r');
+ 257:foodloader.c  ****                         break;
+ 258:foodloader.c  **** 
+ 259:foodloader.c  ****                         /* }}} */
+ 260:foodloader.c  **** 
+ 261:foodloader.c  ****             case 'T':   /* select device type: received device type and respond with CR */
+ 262:foodloader.c  ****                         /* ignore this command, only the device this bootloader
+ 263:foodloader.c  ****                          * is installed on can be programmed :) */
+ 264:foodloader.c  **** 
+ 265:foodloader.c  ****                         /* discard byte and acknowledge */
+ 266:foodloader.c  ****                         uart_getc();
+ 267:foodloader.c  ****                         uart_putc('\r');
+ 268:foodloader.c  ****                         break;
+ 269:foodloader.c  **** 
+ 270:foodloader.c  ****             case 's':   /* read signature bytes: respond with the three signature bytes for this MC
+ 271:foodloader.c  ****                         uart_putc(_SIG_BYTE_3);
+ 272:foodloader.c  ****                         uart_putc(_SIG_BYTE_2);
+ 273:foodloader.c  ****                         uart_putc(_SIG_BYTE_1);
+ 274:foodloader.c  ****                         break;
+ 275:foodloader.c  **** 
+ 276:foodloader.c  ****             case 't':   /* return supported device codes (only one in this case), and terminate wit
+ 277:foodloader.c  ****                         uart_putc(_AVR910_DEVCODE);
+ 278:foodloader.c  ****                         uart_putc(0);
+ 279:foodloader.c  ****                         break;
+ 280:foodloader.c  **** 
+ 281:foodloader.c  ****             case 'S':   /* give software identifier, send exactly 7 chars */
+ 282:foodloader.c  ****                         uart_puts((uint8_t *)"FDL v");
+ 283:foodloader.c  **** 
+ 284:foodloader.c  ****             case 'V':   /* return software version (2 byte) */
+ 285:foodloader.c  ****                         uart_putc(VERSION_BYTE_1);
+ 286:foodloader.c  ****                         uart_putc(VERSION_BYTE_2);
+ 287:foodloader.c  ****                         break;
+ 288:foodloader.c  **** 
+ 289:foodloader.c  ****             case 'p':   /* send programmer type, in this case 'S' for serial */
+ 290:foodloader.c  ****                         uart_putc('S');
+ 291:foodloader.c  ****                         break;
+ 292:foodloader.c  **** 
+ 293:foodloader.c  **** #if EXIT_BOOTLOADER == 1
+ 294:foodloader.c  ****             case 'E':   /* exit bootloader */
+ 295:foodloader.c  **** #endif
+ 296:foodloader.c  ****             case 'X':   /* start application */
+ 297:foodloader.c  **** 
+ 298:foodloader.c  ****                         start_application();
+ 299:foodloader.c  ****                         uart_putc('\r');
+ 300:foodloader.c  **** 
+ 301:foodloader.c  ****                         break;
+ 302:foodloader.c  **** 
+ 303:foodloader.c  ****             case 'b':   /* check block support: return yes and 2 bytes block size we support */
+ 304:foodloader.c  ****                         uart_putc('Y');
+ 305:foodloader.c  ****                         uart_putc(HIGH(BLOCKSIZE));
+ 306:foodloader.c  ****                         uart_putc(LOW(BLOCKSIZE));
+ 307:foodloader.c  ****                         break;
+ 308:foodloader.c  **** 
+ 309:foodloader.c  ****             case 'B':   /* start block flash or eeprom load (fill mcu internal page buffer) */
+ 310:foodloader.c  ****                         /* {{{ */
+ 311:foodloader.c  **** 
+ 312:foodloader.c  ****                         /* first, read buffer size (in bytes) */
+ 313:foodloader.c  ****                         buffer_size = (uart_getc() << 8) | uart_getc();
+ 314:foodloader.c  **** 
+ 315:foodloader.c  ****                         /* check if our buffer can hold all this data */
+ 316:foodloader.c  ****                         if (buffer_size > BLOCKSIZE) {
+ 317:foodloader.c  ****                             uart_putc('?');
+ 318:foodloader.c  ****                             break;
+ 319:foodloader.c  ****                         }
+ 320:foodloader.c  **** 
+ 321:foodloader.c  ****                         /* then, read flash ('F') or eeprom ('E') memory type */
+ 322:foodloader.c  ****                         memory_type = uart_getc();
+ 323:foodloader.c  **** 
+ 324:foodloader.c  ****                         /* memory type is flash */
+ 325:foodloader.c  ****                         if (memory_type == 'F')
+ 326:foodloader.c  ****                         /* {{{ */ {
+ 327:foodloader.c  **** 
+ 328:foodloader.c  ****                             BUF_T i;
+ 329:foodloader.c  ****                             uint16_t temp_word_buffer;
+ 330:foodloader.c  **** 
+ 331:foodloader.c  ****                             if (flash_address > BOOT_SECTION_START) {
+ 332:foodloader.c  ****                                 uart_putc(0);
+ 333:foodloader.c  ****                             }
+ 334:foodloader.c  **** 
+ 335:foodloader.c  **** 							#ifdef FLASH_G_64K
+ 336:foodloader.c  ****                             uint32_t temp_address = flash_address;
+ 337:foodloader.c  ****                             #else
+ 338:foodloader.c  ****                             uint16_t temp_address = flash_address;
+ 339:foodloader.c  ****                             #endif
+ 340:foodloader.c  **** 							
+ 341:foodloader.c  ****                             boot_spm_busy_wait();
+ 342:foodloader.c  **** 
+ 343:foodloader.c  ****                             /* read data, wordwise, low byte first */
+ 344:foodloader.c  ****                             for (i = 0; i < buffer_size/2; i++) {
+ 345:foodloader.c  **** 
+ 346:foodloader.c  ****                                 /* get data word */
+ 347:foodloader.c  ****                                 temp_word_buffer = uart_getc() | (uart_getc() << 8);
+ 348:foodloader.c  **** 
+ 349:foodloader.c  ****                                 /* write data to temporary buffer */
+ 350:foodloader.c  ****                                 boot_page_fill(temp_address, temp_word_buffer);
+ 272               	.LM23:
+ 273 0074 6624      		clr r6
+ 274 0076 6394      		inc r6
+ 351:foodloader.c  **** 
+ 352:foodloader.c  ****                                 /* increment by two, since temp_address is a byte
+ 353:foodloader.c  ****                                  * address, but we are writing words! */
+ 354:foodloader.c  ****                                 temp_address += 2;
+ 355:foodloader.c  ****                             }
+ 356:foodloader.c  **** 
+ 357:foodloader.c  ****                             /* after filling the temp buffer, write the page and wait till we're do
+ 358:foodloader.c  ****                             boot_page_write_safe(flash_address);
+ 276               	.LM24:
+ 277 0078 55E0      		ldi r21,lo8(5)
+ 278 007a 552E      		mov r5,r21
+ 359:foodloader.c  ****                             boot_spm_busy_wait();
+ 360:foodloader.c  **** 
+ 361:foodloader.c  ****                             /* re-enable application flash section, so we can read it again */
+ 362:foodloader.c  ****                             boot_rww_enable();
+ 280               	.LM25:
+ 281 007c 41E1      		ldi r20,lo8(17)
+ 282 007e 442E      		mov r4,r20
+ 283               	.L71:
+ 284               	.LBE43:
+ 214:foodloader.c  ****         command = uart_getc();
+ 286               	.LM26:
+ 287 0080 00D0      		rcall uart_getc
+ 216:foodloader.c  ****         switch (command)
+ 289               	.LM27:
+ 290 0082 8635      		cpi r24,lo8(86)
+ 291 0084 01F4      		brne .+2
+ 292 0086 00C0      		rjmp .L22
+ 293 0088 8735      		cpi r24,lo8(87)
+ 294 008a 00F4      		brsh .L31
+ 295 008c 8C34      		cpi r24,lo8(76)
+ 296 008e 01F4      		brne .+2
+ 297 0090 00C0      		rjmp .L73
+ 298 0092 8D34      		cpi r24,lo8(77)
+ 299 0094 00F4      		brsh .L32
+ 300 0096 8234      		cpi r24,lo8(66)
+ 301 0098 01F4      		brne .+2
+ 302 009a 00C0      		rjmp .L18
+ 303 009c 8534      		cpi r24,lo8(69)
+ 304 009e 01F4      		brne .+2
+ 305 00a0 00C0      		rjmp .L73
+ 306 00a2 8134      		cpi r24,lo8(65)
+ 307 00a4 01F0      		breq .+2
+ 308 00a6 00C0      		rjmp .L16
+ 309 00a8 00C0      		rjmp .L76
+ 310               	.L32:
+ 311 00aa 8335      		cpi r24,lo8(83)
+ 312 00ac 01F4      		brne .+2
+ 313 00ae 00C0      		rjmp .L20
+ 314 00b0 8435      		cpi r24,lo8(84)
+ 315 00b2 01F4      		brne .+2
+ 316 00b4 00C0      		rjmp .L21
+ 317 00b6 8035      		cpi r24,lo8(80)
+ 318 00b8 01F0      		breq .+2
+ 319 00ba 00C0      		rjmp .L16
+ 320 00bc 00C0      		rjmp .L73
+ 321               	.L31:
+ 322 00be 8536      		cpi r24,lo8(101)
+ 323 00c0 01F0      		breq .L26
+ 324 00c2 8636      		cpi r24,lo8(102)
+ 325 00c4 00F4      		brsh .L33
+ 326 00c6 8136      		cpi r24,lo8(97)
+ 327 00c8 01F0      		breq .L24
+ 328 00ca 8236      		cpi r24,lo8(98)
+ 329 00cc 01F4      		brne .+2
+ 330 00ce 00C0      		rjmp .L25
+ 331 00d0 8835      		cpi r24,lo8(88)
+ 332 00d2 01F0      		breq .+2
+ 333 00d4 00C0      		rjmp .L16
+ 334 00d6 00C0      		rjmp .L77
+ 335               	.L33:
+ 336 00d8 8037      		cpi r24,lo8(112)
+ 337 00da 01F4      		brne .+2
+ 338 00dc 00C0      		rjmp .L28
+ 339 00de 8137      		cpi r24,lo8(113)
+ 340 00e0 00F4      		brsh .L34
+ 341 00e2 8736      		cpi r24,lo8(103)
+ 342 00e4 01F0      		breq .+2
+ 343 00e6 00C0      		rjmp .L16
+ 344 00e8 00C0      		rjmp .L78
+ 345               	.L34:
+ 346 00ea 8337      		cpi r24,lo8(115)
+ 347 00ec 01F0      		breq .L29
+ 348 00ee 8437      		cpi r24,lo8(116)
+ 349 00f0 01F0      		breq .+2
+ 350 00f2 00C0      		rjmp .L16
+ 351 00f4 00C0      		rjmp .L79
+ 352               	.L24:
+ 227:foodloader.c  ****                         uart_putc('Y');
+ 354               	.LM28:
+ 355 00f6 89E5      		ldi r24,lo8(89)
+ 356 00f8 00C0      		rjmp .L72
+ 357               	.L76:
+ 234:foodloader.c  ****                         eeprom_address = (uart_getc() << 8) | uart_getc();
+ 359               	.LM29:
+ 360 00fa 00D0      		rcall uart_getc
+ 361 00fc 182F      		mov r17,r24
+ 362 00fe 00D0      		rcall uart_getc
+ 363 0100 B12E      		mov r11,r17
+ 364 0102 AA24      		clr r10
+ 365 0104 90E0      		ldi r25,lo8(0)
+ 366 0106 8A29      		or r24,r10
+ 367 0108 9B29      		or r25,r11
+ 368 010a 9093 0000 		sts (eeprom_address)+1,r25
+ 369 010e 8093 0000 		sts eeprom_address,r24
+ 239:foodloader.c  ****                         flash_address <<= 1;
+ 371               	.LM30:
+ 372 0112 880F      		lsl r24
+ 373 0114 991F      		rol r25
+ 374 0116 00C0      		rjmp .L74
+ 375               	.L26:
+ 243:foodloader.c  ****                         break;
+ 377               	.LM31:
+ 378 0118 E0E0      		ldi r30,lo8(0)
+ 379 011a F0E0      		ldi r31,hi8(0)
+ 380 011c 00C0      		rjmp .L36
+ 381               	.L61:
+ 254:foodloader.c  ****                             boot_page_erase_safe(flash_address);
+ 383               	.LM32:
+ 384 011e 07B6      		in __tmp_reg__,87-32
+ 385 0120 00FC      		sbrc __tmp_reg__,0
+ 386 0122 00C0      		rjmp .L61
+ 387               	.L60:
+ 388 0124 E199      		sbic 60-32,1
+ 389 0126 00C0      		rjmp .L60
+ 390               	/* #APP */
+ 391               	 ;  254 "foodloader.c" 1
+ 392 0128 7092 5700 		sts 87, r7
+ 393 012c E895      		spm
+ 394               		
+ 395               	 ;  0 "" 2
+ 396               	/* #NOAPP */
+ 397 012e E05C      		subi r30,lo8(-(64))
+ 398 0130 FF4F      		sbci r31,hi8(-(64))
+ 399               	.L36:
+ 253:foodloader.c  ****                         for (flash_address = 0; flash_address < BOOT_SECTION_START; flash_address +
+ 401               	.LM33:
+ 402 0132 2CE1      		ldi r18,hi8(7168)
+ 403 0134 E030      		cpi r30,lo8(7168)
+ 404 0136 F207      		cpc r31,r18
+ 405 0138 00F0      		brlo .L61
+ 406 013a F093 0000 		sts (flash_address)+1,r31
+ 407 013e E093 0000 		sts flash_address,r30
+ 408 0142 00C0      		rjmp .L73
+ 409               	.L21:
+ 267:foodloader.c  ****                         uart_getc();
+ 411               	.LM34:
+ 412 0144 00D0      		rcall uart_getc
+ 413 0146 00C0      		rjmp .L73
+ 414               	.L29:
+ 272:foodloader.c  ****                         uart_putc(_SIG_BYTE_3);
+ 416               	.LM35:
+ 417 0148 87E0      		ldi r24,lo8(7)
+ 418 014a 00D0      		rcall uart_putc
+ 273:foodloader.c  ****                         uart_putc(_SIG_BYTE_2);
+ 420               	.LM36:
+ 421 014c 83E9      		ldi r24,lo8(-109)
+ 422 014e 00D0      		rcall uart_putc
+ 274:foodloader.c  ****                         uart_putc(_SIG_BYTE_1);
+ 424               	.LM37:
+ 425 0150 8EE1      		ldi r24,lo8(30)
+ 426 0152 00C0      		rjmp .L72
+ 427               	.L79:
+ 278:foodloader.c  ****                         uart_putc(_AVR910_DEVCODE);
+ 429               	.LM38:
+ 430 0154 86E7      		ldi r24,lo8(118)
+ 431 0156 00D0      		rcall uart_putc
+ 279:foodloader.c  ****                         uart_putc(0);
+ 433               	.LM39:
+ 434 0158 80E0      		ldi r24,lo8(0)
+ 435 015a 00C0      		rjmp .L72
+ 436               	.L20:
+ 283:foodloader.c  ****                         uart_puts((uint8_t *)"FDL v");
+ 438               	.LM40:
+ 439 015c C0E0      		ldi r28,lo8(.LC0)
+ 440 015e D0E0      		ldi r29,hi8(.LC0)
+ 441 0160 00C0      		rjmp .L39
+ 442               	.L40:
+ 443               	.LBB44:
+ 444               	.LBB45:
+  81:foodloader.c  ****         uart_putc(*buffer);
+ 446               	.LM41:
+ 447 0162 00D0      		rcall uart_putc
+  82:foodloader.c  ****         buffer++;
+ 449               	.LM42:
+ 450 0164 2196      		adiw r28,1
+ 451               	.L39:
+  80:foodloader.c  ****     while (*buffer != 0) {
+ 453               	.LM43:
+ 454 0166 8881      		ld r24,Y
+ 455 0168 8823      		tst r24
+ 456 016a 01F4      		brne .L40
+ 457               	.L22:
+ 458               	.LBE45:
+ 459               	.LBE44:
+ 286:foodloader.c  ****                         uart_putc(VERSION_BYTE_1);
+ 461               	.LM44:
+ 462 016c 80E3      		ldi r24,lo8(48)
+ 463 016e 00D0      		rcall uart_putc
+ 287:foodloader.c  ****                         uart_putc(VERSION_BYTE_2);
+ 465               	.LM45:
+ 466 0170 82E3      		ldi r24,lo8(50)
+ 467 0172 00C0      		rjmp .L72
+ 468               	.L28:
+ 291:foodloader.c  ****                         uart_putc('S');
+ 470               	.LM46:
+ 471 0174 83E5      		ldi r24,lo8(83)
+ 472 0176 00C0      		rjmp .L72
+ 473               	.L77:
+ 299:foodloader.c  ****                         start_application();
+ 475               	.LM47:
+ 476 0178 00D0      		rcall start_application
+ 477 017a 00C0      		rjmp .L73
+ 478               	.L25:
+ 305:foodloader.c  ****                         uart_putc('Y');
+ 480               	.LM48:
+ 481 017c 89E5      		ldi r24,lo8(89)
+ 482 017e 00D0      		rcall uart_putc
+ 306:foodloader.c  ****                         uart_putc(HIGH(BLOCKSIZE));
+ 484               	.LM49:
+ 485 0180 80E0      		ldi r24,lo8(0)
+ 486 0182 00D0      		rcall uart_putc
+ 307:foodloader.c  ****                         uart_putc(LOW(BLOCKSIZE));
+ 488               	.LM50:
+ 489 0184 80E4      		ldi r24,lo8(64)
+ 490 0186 00C0      		rjmp .L72
+ 491               	.L18:
+ 314:foodloader.c  ****                         buffer_size = (uart_getc() << 8) | uart_getc();
+ 493               	.LM51:
+ 494 0188 00D0      		rcall uart_getc
+ 495 018a 00D0      		rcall uart_getc
+ 496 018c 082F      		mov r16,r24
+ 317:foodloader.c  ****                         if (buffer_size > BLOCKSIZE) {
+ 498               	.LM52:
+ 499 018e 8134      		cpi r24,lo8(65)
+ 500 0190 00F0      		brlo .+2
+ 501 0192 00C0      		rjmp .L16
+ 502               	.L41:
+ 323:foodloader.c  ****                         memory_type = uart_getc();
+ 504               	.LM53:
+ 505 0194 00D0      		rcall uart_getc
+ 326:foodloader.c  ****                         if (memory_type == 'F')
+ 507               	.LM54:
+ 508 0196 8634      		cpi r24,lo8(70)
+ 509 0198 01F0      		breq .+2
+ 510 019a 00C0      		rjmp .L42
+ 511               	.LBB46:
+ 332:foodloader.c  ****                             if (flash_address > BOOT_SECTION_START) {
+ 513               	.LM55:
+ 514 019c 8091 0000 		lds r24,flash_address
+ 515 01a0 9091 0000 		lds r25,(flash_address)+1
+ 516 01a4 8150      		subi r24,lo8(7169)
+ 517 01a6 9C41      		sbci r25,hi8(7169)
+ 518 01a8 00F0      		brlo .L43
+ 333:foodloader.c  ****                                 uart_putc(0);
+ 520               	.LM56:
+ 521 01aa 80E0      		ldi r24,lo8(0)
+ 522 01ac 00D0      		rcall uart_putc
+ 523               	.L43:
+ 339:foodloader.c  ****                             uint16_t temp_address = flash_address;
+ 525               	.LM57:
+ 526 01ae C090 0000 		lds r12,flash_address
+ 527 01b2 D090 0000 		lds r13,(flash_address)+1
+ 528               	.L44:
+ 342:foodloader.c  ****                             boot_spm_busy_wait();
+ 530               	.LM58:
+ 531 01b6 07B6      		in __tmp_reg__,87-32
+ 532 01b8 00FC      		sbrc __tmp_reg__,0
+ 533 01ba 00C0      		rjmp .L44
+ 345:foodloader.c  ****                             for (i = 0; i < buffer_size/2; i++) {
+ 535               	.LM59:
+ 536 01bc E02E      		mov r14,r16
+ 537 01be E694      		lsr r14
+ 538 01c0 E601      		movw r28,r12
+ 539 01c2 FF24      		clr r15
+ 540 01c4 00C0      		rjmp .L45
+ 541               	.L46:
+ 348:foodloader.c  ****                                 temp_word_buffer = uart_getc() | (uart_getc() << 8);
+ 543               	.LM60:
+ 544 01c6 00D0      		rcall uart_getc
+ 545 01c8 082F      		mov r16,r24
+ 546 01ca 00D0      		rcall uart_getc
+ 351:foodloader.c  ****                                 boot_page_fill(temp_address, temp_word_buffer);
+ 548               	.LM61:
+ 549 01cc 982E      		mov r9,r24
+ 550 01ce 8824      		clr r8
+ 551 01d0 10E0      		ldi r17,lo8(0)
+ 552 01d2 0829      		or r16,r8
+ 553 01d4 1929      		or r17,r9
+ 554 01d6 FE01      		movw r30,r28
+ 555               	/* #APP */
+ 556               	 ;  351 "foodloader.c" 1
+ 557 01d8 0801      		movw  r0, r16
+ 558 01da 6092 5700 		sts 87, r6
+ 559 01de E895      		spm
+ 560 01e0 1124      		clr  r1
+ 561               		
+ 562               	 ;  0 "" 2
+ 355:foodloader.c  ****                                 temp_address += 2;
+ 564               	.LM62:
+ 565               	/* #NOAPP */
+ 566 01e2 2296      		adiw r28,2
+ 345:foodloader.c  ****                             for (i = 0; i < buffer_size/2; i++) {
+ 568               	.LM63:
+ 569 01e4 F394      		inc r15
+ 570               	.L45:
+ 571 01e6 FE14      		cp r15,r14
+ 572 01e8 00F0      		brlo .L46
+ 573 01ea 8E2D      		mov r24,r14
+ 574 01ec 90E0      		ldi r25,lo8(0)
+ 575 01ee 880F      		lsl r24
+ 576 01f0 991F      		rol r25
+ 577 01f2 8C0D      		add r24,r12
+ 578 01f4 9D1D      		adc r25,r13
+ 579               	.L47:
+ 359:foodloader.c  ****                             boot_page_write_safe(flash_address);
+ 581               	.LM64:
+ 582 01f6 07B6      		in __tmp_reg__,87-32
+ 583 01f8 00FC      		sbrc __tmp_reg__,0
+ 584 01fa 00C0      		rjmp .L47
+ 585               	.L62:
+ 586 01fc E199      		sbic 60-32,1
+ 587 01fe 00C0      		rjmp .L62
+ 588 0200 E091 0000 		lds r30,flash_address
+ 589 0204 F091 0000 		lds r31,(flash_address)+1
+ 590               	/* #APP */
+ 591               	 ;  359 "foodloader.c" 1
+ 592 0208 5092 5700 		sts 87, r5
+ 593 020c E895      		spm
+ 594               		
+ 595               	 ;  0 "" 2
+ 596               	/* #NOAPP */
+ 597               	.L49:
+ 360:foodloader.c  ****                             boot_spm_busy_wait();
+ 599               	.LM65:
+ 600 020e 07B6      		in __tmp_reg__,87-32
+ 601 0210 00FC      		sbrc __tmp_reg__,0
+ 602 0212 00C0      		rjmp .L49
+ 604               	.LM66:
+ 605               	/* #APP */
+ 606               	 ;  363 "foodloader.c" 1
+ 607 0214 4092 5700 		sts 87, r4
+ 608 0218 E895      		spm
+ 609               		
+ 610               	 ;  0 "" 2
+ 611               	/* #NOAPP */
+ 612               	.L74:
+ 363:foodloader.c  **** 
+ 364:foodloader.c  ****                             /* store next page's address, since we do auto-address-incrementing */
+ 365:foodloader.c  ****                             flash_address = temp_address;
+ 614               	.LM67:
+ 615 021a 9093 0000 		sts (flash_address)+1,r25
+ 616 021e 8093 0000 		sts flash_address,r24
+ 617 0222 00C0      		rjmp .L73
+ 618               	.L42:
+ 619               	.LBE46:
+ 366:foodloader.c  **** 
+ 367:foodloader.c  ****                             uart_putc('\r');
+ 368:foodloader.c  **** 
+ 369:foodloader.c  ****                         } /* }}} */
+ 370:foodloader.c  ****                         else if (memory_type == 'E')
+ 621               	.LM68:
+ 622 0224 8534      		cpi r24,lo8(69)
+ 623 0226 01F0      		breq .+2
+ 624 0228 00C0      		rjmp .L16
+ 625 022a 10E0      		ldi r17,lo8(0)
+ 626 022c 00C0      		rjmp .L51
+ 627               	.L52:
+ 628               	.LBB47:
+ 371:foodloader.c  ****                         /* {{{ */ {
+ 372:foodloader.c  **** 
+ 373:foodloader.c  ****                             //uart_putc('E');
+ 374:foodloader.c  ****                             uint8_t temp_data;
+ 375:foodloader.c  ****                             BUF_T i;
+ 376:foodloader.c  **** 
+ 377:foodloader.c  ****                             for (i = 0; i < buffer_size; i++) {
+ 378:foodloader.c  ****                                 temp_data = uart_getc();
+ 630               	.LM69:
+ 631 022e 00D0      		rcall uart_getc
+ 632 0230 682F      		mov r22,r24
+ 379:foodloader.c  ****                                 eeprom_write_byte( (uint8_t *)eeprom_address, temp_data);
+ 634               	.LM70:
+ 635 0232 8091 0000 		lds r24,eeprom_address
+ 636 0236 9091 0000 		lds r25,(eeprom_address)+1
+ 637 023a 00D0      		rcall __eewr_byte_m8
+ 380:foodloader.c  **** 
+ 381:foodloader.c  ****                                 eeprom_address++;
+ 639               	.LM71:
+ 640 023c 8091 0000 		lds r24,eeprom_address
+ 641 0240 9091 0000 		lds r25,(eeprom_address)+1
+ 642 0244 0196      		adiw r24,1
+ 643 0246 9093 0000 		sts (eeprom_address)+1,r25
+ 644 024a 8093 0000 		sts eeprom_address,r24
+ 378:foodloader.c  ****                             for (i = 0; i < buffer_size; i++) {
+ 646               	.LM72:
+ 647 024e 1F5F      		subi r17,lo8(-(1))
+ 648               	.L51:
+ 649 0250 1017      		cp r17,r16
+ 650 0252 00F0      		brlo .L52
+ 651               	.L73:
+ 382:foodloader.c  ****                             }
+ 383:foodloader.c  **** 
+ 384:foodloader.c  ****                             uart_putc('\r');
+ 653               	.LM73:
+ 654 0254 8DE0      		ldi r24,lo8(13)
+ 655 0256 00C0      		rjmp .L72
+ 656               	.L78:
+ 657               	.LBE47:
+ 385:foodloader.c  **** 
+ 386:foodloader.c  ****                         } /* }}} */
+ 387:foodloader.c  ****                         else {
+ 388:foodloader.c  ****                             uart_putc('?');
+ 389:foodloader.c  ****                         }
+ 390:foodloader.c  **** 
+ 391:foodloader.c  ****                         break;
+ 392:foodloader.c  **** 
+ 393:foodloader.c  ****                         /* }}} */
+ 394:foodloader.c  **** 
+ 395:foodloader.c  ****             case 'g':   /* start block flash or eeprom read */
+ 396:foodloader.c  ****                         /* {{{ */
+ 397:foodloader.c  **** 
+ 398:foodloader.c  ****                         /* first, read byte counter */
+ 399:foodloader.c  ****                         buffer_size = (uart_getc() << 8) | uart_getc();
+ 659               	.LM74:
+ 660 0258 00D0      		rcall uart_getc
+ 661 025a 00D0      		rcall uart_getc
+ 662 025c E82E      		mov r14,r24
+ 400:foodloader.c  **** 
+ 401:foodloader.c  ****                         /* then, read memory type */
+ 402:foodloader.c  ****                         memory_type = uart_getc();
+ 664               	.LM75:
+ 665 025e 00D0      		rcall uart_getc
+ 403:foodloader.c  **** 
+ 404:foodloader.c  ****                         /* memory type is flash */
+ 405:foodloader.c  ****                         if (memory_type == 'F')
+ 667               	.LM76:
+ 668 0260 8634      		cpi r24,lo8(70)
+ 669 0262 01F4      		brne .L53
+ 670 0264 FF24      		clr r15
+ 671 0266 00C0      		rjmp .L54
+ 672               	.L55:
+ 673               	.LBB48:
+ 674               	.LBB49:
+ 675               	.LBB50:
+ 406:foodloader.c  ****                         /* {{{ */ {
+ 407:foodloader.c  **** 
+ 408:foodloader.c  ****                             /* read buffer_size words */
+ 409:foodloader.c  ****                             for (BUF_T i = 0; i < buffer_size; i += 2) {
+ 410:foodloader.c  ****                                 uint16_t temp_word_buffer;
+ 411:foodloader.c  **** 
+ 412:foodloader.c  ****                                 /* read word */
+ 413:foodloader.c  **** 								#ifdef FLASH_G_64K
+ 414:foodloader.c  **** 								temp_word_buffer = pgm_read_word_far(flash_address);
+ 415:foodloader.c  **** 								#else
+ 416:foodloader.c  ****                                 temp_word_buffer = pgm_read_word(flash_address);
+ 677               	.LM77:
+ 678 0268 E091 0000 		lds r30,flash_address
+ 679 026c F091 0000 		lds r31,(flash_address)+1
+ 680               	/* #APP */
+ 681               	 ;  417 "foodloader.c" 1
+ 682 0270 0591      		lpm r16, Z+
+ 683 0272 1491      		lpm r17, Z
+ 684               		
+ 685               	 ;  0 "" 2
+ 686               	/* #NOAPP */
+ 687               	.LBE50:
+ 417:foodloader.c  **** 								#endif
+ 418:foodloader.c  **** 								
+ 419:foodloader.c  ****                                 /* send data */
+ 420:foodloader.c  ****                                 uart_putc(LOW(temp_word_buffer));
+ 689               	.LM78:
+ 690 0274 802F      		mov r24,r16
+ 691 0276 00D0      		rcall uart_putc
+ 421:foodloader.c  ****                                 uart_putc(HIGH(temp_word_buffer));
+ 693               	.LM79:
+ 694 0278 812F      		mov r24,r17
+ 695 027a 00D0      		rcall uart_putc
+ 422:foodloader.c  **** 
+ 423:foodloader.c  ****                                 /* increment address by 2, since it's a byte address */
+ 424:foodloader.c  ****                                 flash_address += 2;
+ 697               	.LM80:
+ 698 027c 8091 0000 		lds r24,flash_address
+ 699 0280 9091 0000 		lds r25,(flash_address)+1
+ 700 0284 0296      		adiw r24,2
+ 701 0286 9093 0000 		sts (flash_address)+1,r25
+ 702 028a 8093 0000 		sts flash_address,r24
+ 703               	.LBE49:
+ 410:foodloader.c  ****                             for (BUF_T i = 0; i < buffer_size; i += 2) {
+ 705               	.LM81:
+ 706 028e F2E0      		ldi r31,lo8(2)
+ 707 0290 FF0E      		add r15,r31
+ 708               	.L54:
+ 709 0292 FE14      		cp r15,r14
+ 710 0294 00F0      		brlo .L55
+ 711 0296 00C0      		rjmp .L71
+ 712               	.L53:
+ 713               	.LBE48:
+ 425:foodloader.c  ****                             }
+ 426:foodloader.c  **** 
+ 427:foodloader.c  ****                         } /* }}} */
+ 428:foodloader.c  ****                         /* if memory type is eeprom */
+ 429:foodloader.c  ****                         else if (memory_type == 'E')
+ 715               	.LM82:
+ 716 0298 8534      		cpi r24,lo8(69)
+ 717 029a 01F4      		brne .L16
+ 718 029c 10E0      		ldi r17,lo8(0)
+ 719 029e 00C0      		rjmp .L57
+ 720               	.L58:
+ 721               	.LBB51:
+ 722               	.LBB52:
+ 430:foodloader.c  ****                         /* {{{ */ {
+ 431:foodloader.c  **** 
+ 432:foodloader.c  ****                             for (uint8_t i = 0; i < buffer_size; i += 1) {
+ 433:foodloader.c  ****                                 uint8_t temp_buffer;
+ 434:foodloader.c  **** 
+ 435:foodloader.c  ****                                 /* read and send byte */
+ 436:foodloader.c  ****                                 temp_buffer = eeprom_read_byte((uint8_t *)eeprom_address);
+ 724               	.LM83:
+ 725 02a0 8091 0000 		lds r24,eeprom_address
+ 726 02a4 9091 0000 		lds r25,(eeprom_address)+1
+ 727 02a8 00D0      		rcall __eerd_byte_m8
+ 437:foodloader.c  ****                                 uart_putc(temp_buffer);
+ 729               	.LM84:
+ 730 02aa 00D0      		rcall uart_putc
+ 438:foodloader.c  **** 
+ 439:foodloader.c  ****                                 eeprom_address++;
+ 732               	.LM85:
+ 733 02ac 8091 0000 		lds r24,eeprom_address
+ 734 02b0 9091 0000 		lds r25,(eeprom_address)+1
+ 735 02b4 0196      		adiw r24,1
+ 736 02b6 9093 0000 		sts (eeprom_address)+1,r25
+ 737 02ba 8093 0000 		sts eeprom_address,r24
+ 738               	.LBE52:
+ 433:foodloader.c  ****                             for (uint8_t i = 0; i < buffer_size; i += 1) {
+ 740               	.LM86:
+ 741 02be 1F5F      		subi r17,lo8(-(1))
+ 742               	.L57:
+ 743 02c0 1E15      		cp r17,r14
+ 744 02c2 00F0      		brlo .L58
+ 745 02c4 00C0      		rjmp .L71
+ 746               	.L16:
+ 747               	.LBE51:
+ 440:foodloader.c  ****                             }
+ 441:foodloader.c  ****                         } /* }}} */
+ 442:foodloader.c  ****                         else {
+ 443:foodloader.c  ****                             uart_putc('?');
+ 444:foodloader.c  ****                         }
+ 445:foodloader.c  **** 
+ 446:foodloader.c  ****                         break;
+ 447:foodloader.c  **** 
+ 448:foodloader.c  ****                         /* }}} */
+ 449:foodloader.c  **** 
+ 450:foodloader.c  ****             /* NOT IMPLEMENTED: */
+ 451:foodloader.c  ****             /* {{{ */
+ 452:foodloader.c  ****             /* 'c': write program memory, low byte -- NOT IMPLEMENTED */
+ 453:foodloader.c  ****             /* 'C': write program memory, high byte -- NOT IMPLEMENTED */
+ 454:foodloader.c  ****             /* 'm': issue page write -- NOT IMPLEMENTED */
+ 455:foodloader.c  ****             /* 'r': read lock bits -- NOT IMPLEMENTED */
+ 456:foodloader.c  ****             /* 'R': read program memory -- NOT IMPLEMENTED */
+ 457:foodloader.c  ****             /* 'd': read data (== eeprom) memory -- NOT IMPLEMENT */
+ 458:foodloader.c  ****             /* 'D': write data (== eeprom) memory -- NOT IMPLEMENTED */
+ 459:foodloader.c  ****             /* 'l': write lock bits -- NOT IMPLEMENTED */
+ 460:foodloader.c  ****             /* 'F': read fuse bits -- NOT IMPLEMENTED */
+ 461:foodloader.c  ****             /* 'N': read high fuse bits -- NOT IMPLEMENTED */
+ 462:foodloader.c  ****             /* 'Q': read extended fuse bits -- NOT IMPLEMENTED */ /* }}} */
+ 463:foodloader.c  **** 
+ 464:foodloader.c  ****             default:    /* default: respond with '?' */
+ 465:foodloader.c  ****                         uart_putc('?');
+ 749               	.LM87:
+ 750 02c6 8FE3      		ldi r24,lo8(63)
+ 751               	.L72:
+ 752 02c8 00D0      		rcall uart_putc
+ 753 02ca 00C0      		rjmp .L71
+ 754               	.L75:
+ 755               	.LBE42:
+ 195:foodloader.c  ****         uart_putc('a');
+ 757               	.LM88:
+ 758 02cc 81E6      		ldi r24,lo8(97)
+ 759 02ce 00D0      		rcall uart_putc
+ 198:foodloader.c  ****         start_application();
+ 761               	.LM89:
+ 762 02d0 00D0      		rcall start_application
+ 763 02d2 00C0      		rjmp .L13
+ 802               	.Lscope4:
+ 804               		.stabd	78,0,0
+ 805               	.global	jump_to_application
+ 806               	.global	jump_to_application
+ 807               		.section .bss
+ 810               	jump_to_application:
+ 811 0000 0000      		.skip 2,0
+ 812               		.comm flash_address,2,1
+ 813               		.comm eeprom_address,2,1
+ 817               		.text
+ 819               	.Letext0:
+DEFINED SYMBOLS
+                            *ABS*:00000000 foodloader.c
+     /tmp/ccSI75LZ.s:2      *ABS*:0000003f __SREG__
+     /tmp/ccSI75LZ.s:3      *ABS*:0000003e __SP_H__
+     /tmp/ccSI75LZ.s:4      *ABS*:0000003d __SP_L__
+     /tmp/ccSI75LZ.s:5      *ABS*:00000034 __CCP__
+     /tmp/ccSI75LZ.s:6      *ABS*:00000000 __tmp_reg__
+     /tmp/ccSI75LZ.s:7      *ABS*:00000001 __zero_reg__
+     /tmp/ccSI75LZ.s:96     .text:00000000 uart_putc
+     /tmp/ccSI75LZ.s:121    .text:00000008 uart_getc
+     /tmp/ccSI75LZ.s:146    .text:00000010 start_application
+     /tmp/ccSI75LZ.s:810    .bss:00000000 jump_to_application
+     /tmp/ccSI75LZ.s:173    .text:0000001c main
+                            *COM*:00000002 eeprom_address
+                            *COM*:00000002 flash_address
+
+UNDEFINED SYMBOLS
+__do_copy_data
+__do_clear_bss
+__eewr_byte_m8
+__eerd_byte_m8

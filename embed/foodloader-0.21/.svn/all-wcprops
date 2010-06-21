@@ -1,0 +1,71 @@
+K 25
+svn:wc:ra_dav:version-url
+V 71
+/svn/!svn/ver/2644/microcontroller/src-atmel/bootloader/foodloader-0.21
+END
+foodloader.c
+K 25
+svn:wc:ra_dav:version-url
+V 84
+/svn/!svn/ver/1981/microcontroller/src-atmel/bootloader/foodloader-0.21/foodloader.c
+END
+uart.h
+K 25
+svn:wc:ra_dav:version-url
+V 78
+/svn/!svn/ver/1975/microcontroller/src-atmel/bootloader/foodloader-0.21/uart.h
+END
+LICENSE
+K 25
+svn:wc:ra_dav:version-url
+V 79
+/svn/!svn/ver/1617/microcontroller/src-atmel/bootloader/foodloader-0.21/LICENSE
+END
+fuses.txt
+K 25
+svn:wc:ra_dav:version-url
+V 81
+/svn/!svn/ver/1617/microcontroller/src-atmel/bootloader/foodloader-0.21/fuses.txt
+END
+config.h
+K 25
+svn:wc:ra_dav:version-url
+V 80
+/svn/!svn/ver/1975/microcontroller/src-atmel/bootloader/foodloader-0.21/config.h
+END
+config.mk
+K 25
+svn:wc:ra_dav:version-url
+V 81
+/svn/!svn/ver/1975/microcontroller/src-atmel/bootloader/foodloader-0.21/config.mk
+END
+config.mk.mega8
+K 25
+svn:wc:ra_dav:version-url
+V 87
+/svn/!svn/ver/1619/microcontroller/src-atmel/bootloader/foodloader-0.21/config.mk.mega8
+END
+config.mk.mega162
+K 25
+svn:wc:ra_dav:version-url
+V 89
+/svn/!svn/ver/1619/microcontroller/src-atmel/bootloader/foodloader-0.21/config.mk.mega162
+END
+Makefile
+K 25
+svn:wc:ra_dav:version-url
+V 80
+/svn/!svn/ver/1975/microcontroller/src-atmel/bootloader/foodloader-0.21/Makefile
+END
+avr.mk
+K 25
+svn:wc:ra_dav:version-url
+V 78
+/svn/!svn/ver/1975/microcontroller/src-atmel/bootloader/foodloader-0.21/avr.mk
+END
+config.mk.mega128
+K 25
+svn:wc:ra_dav:version-url
+V 89
+/svn/!svn/ver/1975/microcontroller/src-atmel/bootloader/foodloader-0.21/config.mk.mega128
+END
