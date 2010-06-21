@@ -1,6 +1,6 @@
 
 CC = gcc
-CFLAGS = -Wall -Wstrict-prototypes -std=gnu99 -fno-inline -O2 -Werror
+CFLAGS = -Wall -Wstrict-prototypes -std=gnu99 -fno-inline -O2 #-Werror
 #LDFLAGS += -lm
 
 all: launch-bootloader

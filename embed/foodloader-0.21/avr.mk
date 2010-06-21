@@ -50,7 +50,7 @@ ifneq ($(DEBUG),)
 	CFLAGS += -Wmissing-declarations -Wredundant-decls
 	CFLAGS += -Wstrict-prototypes -Wshadow -Wbad-function-cast
 	CFLAGS += -Winline -Wpointer-arith -Wsign-compare
-	CFLAGS += -Wunreachable-code -Wdisabled-optimization -Werror
+	CFLAGS += -Wunreachable-code -Wdisabled-optimization #-Werror
 	CFLAGS += -Wcast-align -Wwrite-strings -Wnested-externs -Wundef
 	CFLAGS += -Wa,-adhlns=$(basename $@).lst
 	CFLAGS += -DDEBUG
